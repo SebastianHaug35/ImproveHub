@@ -1,14 +1,14 @@
 <mxfile host="65bd71144e">
-    <diagram id="health-data-architecture" name="ImproveHUB System Architecture">
+    <diagram id="improvehub-architecture" name="ImproveHUB System Architecture">
         <mxGraphModel dx="2200" dy="1450" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1450" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-                <mxCell id="title" value="ImproveHUB OpenClaw System Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=28;fontStyle=1;fontColor=#111827;" parent="1" vertex="1">
+                <mxCell id="title" value="ImproveHUB System Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=28;fontStyle=1;fontColor=#111827;" parent="1" vertex="1">
                     <mxGeometry x="600" y="30" width="1000" height="45" as="geometry"/>
                 </mxCell>
 
-                <mxCell id="health_band" value="Health Data Inputs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#22C55E;fontColor=#14532D;fontStyle=1;" parent="1" vertex="1">
+                <mxCell id="health_band" value="Personal Data Inputs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#22C55E;fontColor=#14532D;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="50" y="110" width="520" height="650" as="geometry"/>
                 </mxCell>
                 <mxCell id="server_band" value="Central Server / Host Machine" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#2563EB;fontColor=#1E3A8A;fontStyle=1;" parent="1" vertex="1">
@@ -44,10 +44,10 @@
                 <mxCell id="master_thesis_container" value="Masterarbeit Docker Container&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;(Research Sandbox-Pendant) thesis code, data, experiments&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#7C3AED;fontColor=#4C1D95;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1160" y="300" width="230" height="150" as="geometry"/>
                 </mxCell>
-                <mxCell id="plugin_container_b" value="Future Container&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;API worker / model / adapter&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFEFF;strokeColor=#0891B2;fontColor=#164E63;dashed=1;" parent="1" vertex="1">
+                <mxCell id="private_upload_pipeline" value="Private Data Upload Pipeline&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;sicherer Upload, Auth, Verschluesselung, Validierung, Malware-Scan&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFEFF;strokeColor=#0891B2;fontColor=#164E63;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1160" y="485" width="230" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="server_code" value="Future Container&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;new module / skill / service&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFEFF;strokeColor=#0891B2;fontColor=#164E63;dashed=1;" parent="1" vertex="1">
+                <mxCell id="private_doc_processing" value="Document ETL / OCR / Classification&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;extrahiert Felder, taggt privat/sensitiv und bildet Entitaeten fuer Ontologie + Metriken&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFEFF;strokeColor=#0891B2;fontColor=#164E63;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1160" y="585" width="230" height="70" as="geometry"/>
                 </mxCell>
                 <mxCell id="context_store" value="Mounted Volumes / Context Store&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;history, logs, state&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F5F9;strokeColor=#64748B;fontColor=#334155;" parent="1" vertex="1">
@@ -87,6 +87,12 @@
                 </mxCell>
                 <mxCell id="firestore" value="Firebase Firestore&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;healthConnectUsers/default&lt;br&gt;healthConnectDaily + imports&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontColor=#1E3A8A;" parent="1" vertex="1">
                     <mxGeometry x="100" y="555" width="190" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="mobile_capture_source" value="Smartphone / Capture App&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;Informationsquelle fuer Gesundheits-/Krankheitsbilder, Essensbilder, Audio zu Gemuetszustand sowie Tages-/Wochenrueckblick&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontColor=#312E81;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="100" y="665" width="190" height="85" as="geometry"/>
+                </mxCell>
+                <mxCell id="private_docs_source" value="Private Dokumente&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;Vermoegens-, Gesundheits- und Gehaltsdaten als PDF, Scan oder Bild&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontColor=#14532D;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="330" y="670" width="190" height="80" as="geometry"/>
                 </mxCell>
 
                 <mxCell id="esp32" value="ESP32 Room Node&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;external hardware, reachable through HTTP API&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FED7AA;strokeColor=#EA580C;fontColor=#7C2D12;fontStyle=1;" parent="1" vertex="1">
@@ -166,6 +172,24 @@
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="edge_firestore_openclaw" value="Firestore reads" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2563EB;endArrow=block;endFill=1;" parent="1" source="firestore" target="openclaw_admin" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_mobile_pipeline" value="Bilder, Audio, Rueckblicke" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4F46E5;endArrow=block;endFill=1;" parent="1" source="mobile_capture_source" target="private_upload_pipeline" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_private_docs_pipeline" value="PDFs, Scans, sensible Unterlagen" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#16A34A;endArrow=block;endFill=1;" parent="1" source="private_docs_source" target="private_upload_pipeline" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_upload_processing" value="normalisierte Payloads" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0891B2;endArrow=block;endFill=1;" parent="1" source="private_upload_pipeline" target="private_doc_processing" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_processing_storage" value="verschluesselte Originale" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0891B2;endArrow=block;endFill=1;" parent="1" source="private_doc_processing" target="file_storage_app" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_processing_database" value="Metadaten, Freigaben" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0891B2;endArrow=block;endFill=1;" parent="1" source="private_doc_processing" target="database_app" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_processing_impact_tool" value="strukturierte Entitaeten + Kennzahlen" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7C3AED;endArrow=block;endFill=1;" parent="1" source="private_doc_processing" target="impact_data_tool" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
 

@@ -10,6 +10,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
@@ -37,16 +38,22 @@ import kotlinx.coroutines.tasks.await
 class MainActivity : ComponentActivity() {
     companion object {
         private const val HEALTH_CONNECT_PACKAGE = "com.google.android.apps.healthdata"
-        private const val FIRESTORE_USER_ID = "default"
         private const val FIRESTORE_COLLECTION = "healthConnectUsers"
+        private const val LEGACY_FALLBACK_USER_ID = "default"
+        private const val HEART_RATE_WINDOW_DAYS = 30L
+        private const val HEART_RATE_CHUNK_SIZE = 500
+        private const val FIRESTORE_MAX_BATCH_WRITES = 450
     }
 
     private lateinit var statusText: TextView
     private lateinit var previewText: TextView
     private lateinit var healthConnectClient: HealthConnectClient
     private val firestore by lazy { FirebaseFirestore.getInstance() }
+    private val firebaseAuth by lazy { FirebaseAuth.getInstance() }
+    private var actionAfterPermissionGrant: (() -> Unit)? = null
 
     private var latestJson: String = "{}"
+    private var latestHeartRateTimeline: HeartRateTimeline? = null
     private val zoneId: ZoneId = ZoneId.systemDefault()
 
     private val permissions =
@@ -67,8 +74,15 @@ class MainActivity : ComponentActivity() {
             PermissionController.createRequestPermissionResultContract(HEALTH_CONNECT_PACKAGE)
         ) { granted ->
             if (granted.containsAll(permissions)) {
-                setStatus("Permissions granted. Reading Health Connect data...")
-                readAndRender()
+                val action = actionAfterPermissionGrant
+                actionAfterPermissionGrant = null
+                if (action != null) {
+                    setStatus("Permissions granted.")
+                    action()
+                } else {
+                    setStatus("Permissions granted. Reading Health Connect data...")
+                    readAndRender()
+                }
             } else {
                 val missing = permissions.size - granted.intersect(permissions).size
                 setStatus("Permissions incomplete. Missing: $missing")
@@ -77,6 +91,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AutoSyncScheduler.schedule(this)
         buildUi()
 
         when (HealthConnectClient.getSdkStatus(this)) {
@@ -119,6 +134,10 @@ class MainActivity : ComponentActivity() {
             text = "Read last 14 days"
             setOnClickListener { readAndRender() }
         }
+        val readHeartRateTimelineButton = Button(this).apply {
+            text = "Read all-time heart rate"
+            setOnClickListener { readAllHeartRateTimeline() }
+        }
         val shareButton = Button(this).apply {
             text = "Share JSON export"
             setOnClickListener { shareLatestJson() }
@@ -126,6 +145,10 @@ class MainActivity : ComponentActivity() {
         val uploadButton = Button(this).apply {
             text = "Upload to Firebase"
             setOnClickListener { uploadLatestJsonToFirebase() }
+        }
+        val uploadHeartRateTimelineButton = Button(this).apply {
+            text = "Upload all-time heart rate"
+            setOnClickListener { uploadHeartRateTimelineToFirebase() }
         }
         val settingsButton = Button(this).apply {
             text = "Open Health Connect settings"
@@ -151,7 +174,9 @@ class MainActivity : ComponentActivity() {
         root.addView(statusText)
         root.addView(requestButton)
         root.addView(readButton)
+        root.addView(readHeartRateTimelineButton)
         root.addView(uploadButton)
+        root.addView(uploadHeartRateTimelineButton)
         root.addView(shareButton)
         root.addView(permissionsButton)
         root.addView(appButton)
@@ -173,6 +198,7 @@ class MainActivity : ComponentActivity() {
                 setStatus("Permissions already granted. Reading data...")
                 readAndRender()
             } else {
+                actionAfterPermissionGrant = { readAndRender() }
                 requestPermissions.launch(permissions)
             }
         }
@@ -186,6 +212,13 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             try {
+                val granted = healthConnectClient.permissionController.getGrantedPermissions()
+                if (!granted.containsAll(permissions)) {
+                    setStatus("Health Connect permissions required. Please grant access.")
+                    actionAfterPermissionGrant = { readAndRender() }
+                    requestPermissions.launch(permissions)
+                    return@launch
+                }
                 val end = Instant.now()
                 val start = LocalDate.now(zoneId).minusDays(13).atStartOfDay(zoneId).toInstant()
                 val export = readHealthExport(start, end)
@@ -196,6 +229,76 @@ class MainActivity : ComponentActivity() {
                 setStatus("Read failed: ${error.message}")
             }
         }
+    }
+
+    private fun readAllHeartRateTimeline() {
+        if (!::healthConnectClient.isInitialized) {
+            setStatus("Health Connect client is not ready.")
+            return
+        }
+
+        lifecycleScope.launch {
+            try {
+                val granted = healthConnectClient.permissionController.getGrantedPermissions()
+                if (!granted.containsAll(permissions)) {
+                    setStatus("Health Connect permissions required. Please grant access.")
+                    actionAfterPermissionGrant = { readAllHeartRateTimeline() }
+                    requestPermissions.launch(permissions)
+                    return@launch
+                }
+                setStatus("Reading all-time heart rate samples. This can take a while...")
+                val end = Instant.now()
+                val start = LocalDate.of(2000, 1, 1).atStartOfDay(zoneId).toInstant()
+                val timeline = readHeartRateTimeline(start, end)
+                latestHeartRateTimeline = timeline
+                previewText.text = timeline.toPreviewJson()
+                setStatus(
+                    "Heart rate timeline ready: ${timeline.totalSamples} samples, ${timeline.sources.size} source apps."
+                )
+            } catch (error: Exception) {
+                setStatus("Heart rate read failed: ${error.message}")
+            }
+        }
+    }
+
+    private suspend fun readHeartRateTimeline(start: Instant, end: Instant): HeartRateTimeline {
+        val points = mutableListOf<HeartRatePoint>()
+        val sources = linkedSetOf<String>()
+        val windowSeconds = HEART_RATE_WINDOW_DAYS * 24L * 60L * 60L
+        var cursor = start
+
+        while (cursor < end) {
+            val windowEnd = minOf(cursor.plusSeconds(windowSeconds), end)
+            val records = readRecords<HeartRateRecord>(cursor, windowEnd)
+            records.forEach { record ->
+                val source = record.metadata.dataOrigin.packageName
+                sources.add(source)
+                record.samples.forEach { sample ->
+                    points.add(
+                        HeartRatePoint(
+                            time = sample.time.toString(),
+                            bpm = sample.beatsPerMinute,
+                            sourceApp = source,
+                        )
+                    )
+                }
+            }
+            if (windowEnd == end) {
+                break
+            }
+            cursor = windowEnd.plusMillis(1)
+        }
+
+        val sortedPoints = points.sortedBy { it.time }
+        return HeartRateTimeline(
+            exportedAt = Instant.now().toString(),
+            zoneId = zoneId.id,
+            start = start.toString(),
+            end = end.toString(),
+            sources = sources.sorted(),
+            points = sortedPoints,
+            totalSamples = sortedPoints.size,
+        )
     }
 
     private suspend fun readHealthExport(start: Instant, end: Instant): HealthExport {
@@ -341,10 +444,29 @@ private fun MutableSet<String>.addSource(record: Record) {
                     setStatus("No export available yet. Read Health Connect data first.")
                     return@launch
                 }
-                uploadExportToFirestore(export)
-                setStatus("Firebase upload finished without deleting existing data.")
+                val identity = resolveUploadIdentity()
+                uploadExportToFirestore(identity.userId, export)
+                val suffix = identity.warning?.let { " $it" } ?: ""
+                setStatus("Firebase upload finished without deleting existing data.$suffix")
             } catch (error: Exception) {
-                setStatus("Firebase upload failed: ${error.message}")
+                setStatus(formatFirebaseError("Firebase upload failed", error))
+            }
+        }
+    }
+
+    private fun uploadHeartRateTimelineToFirebase() {
+        lifecycleScope.launch {
+            try {
+                val timeline = latestHeartRateTimeline ?: run {
+                    setStatus("No all-time heart-rate timeline available yet. Read it first.")
+                    return@launch
+                }
+                val identity = resolveUploadIdentity()
+                uploadHeartRateTimelineToFirestore(identity.userId, timeline)
+                val suffix = identity.warning?.let { " $it" } ?: ""
+                setStatus("All-time heart-rate upload finished: ${timeline.totalSamples} samples.$suffix")
+            } catch (error: Exception) {
+                setStatus(formatFirebaseError("All-time heart-rate upload failed", error))
             }
         }
     }
@@ -356,8 +478,8 @@ private fun MutableSet<String>.addSource(record: Record) {
         return ParsedExport.fromJson(latestJson)
     }
 
-    private suspend fun uploadExportToFirestore(export: ParsedExport) {
-        val userRef = firestore.collection(FIRESTORE_COLLECTION).document(FIRESTORE_USER_ID)
+    private suspend fun uploadExportToFirestore(userId: String, export: ParsedExport) {
+        val userRef = firestore.collection(FIRESTORE_COLLECTION).document(userId)
         val rootPayload =
             hashMapOf(
                 "healthConnect" to
@@ -432,6 +554,64 @@ private fun MutableSet<String>.addSource(record: Record) {
         batch.commit().await()
     }
 
+    private suspend fun uploadHeartRateTimelineToFirestore(userId: String, timeline: HeartRateTimeline) {
+        val userRef = firestore.collection(FIRESTORE_COLLECTION).document(userId)
+        userRef.set(
+            hashMapOf(
+                "healthConnect" to
+                    hashMapOf(
+                        "lastHeartRateTimelineAt" to timeline.exportedAt,
+                        "lastHeartRateTimelineSamples" to timeline.totalSamples,
+                        "lastHeartRateTimelineRange" to hashMapOf("start" to timeline.start, "end" to timeline.end),
+                    )
+            ),
+            com.google.firebase.firestore.SetOptions.merge(),
+        ).await()
+
+        val importId = timeline.exportedAt.replace(":", "-")
+        val importRef = userRef.collection("healthConnectHeartRateImports").document(importId)
+        importRef.set(
+            hashMapOf(
+                "exportedAt" to timeline.exportedAt,
+                "zoneId" to timeline.zoneId,
+                "start" to timeline.start,
+                "end" to timeline.end,
+                "sources" to timeline.sources,
+                "totalSamples" to timeline.totalSamples,
+                "chunkSize" to HEART_RATE_CHUNK_SIZE,
+            ),
+            com.google.firebase.firestore.SetOptions.merge(),
+        ).await()
+
+        val chunks = timeline.points.chunked(HEART_RATE_CHUNK_SIZE)
+        var batch = firestore.batch()
+        var pendingWrites = 0
+
+        chunks.forEachIndexed { index, chunk ->
+            val docRef = importRef.collection("samples").document(index.toString().padStart(6, '0'))
+            val payload =
+                hashMapOf(
+                    "index" to index,
+                    "count" to chunk.size,
+                    "startTime" to chunk.firstOrNull()?.time,
+                    "endTime" to chunk.lastOrNull()?.time,
+                    "samples" to chunk.map { it.toMap() },
+                )
+            batch.set(docRef, payload, com.google.firebase.firestore.SetOptions.merge())
+            pendingWrites += 1
+
+            if (pendingWrites >= FIRESTORE_MAX_BATCH_WRITES) {
+                batch.commit().await()
+                batch = firestore.batch()
+                pendingWrites = 0
+            }
+        }
+
+        if (pendingWrites > 0) {
+            batch.commit().await()
+        }
+    }
+
     private fun openHealthConnectSettings() {
         val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
             data = Uri.parse("package:com.google.android.apps.healthdata")
@@ -463,7 +643,52 @@ private fun MutableSet<String>.addSource(record: Record) {
     private fun setStatus(message: String) {
         statusText.text = message
     }
+
+    private suspend fun ensureFirebaseUserId(): String {
+        val current = firebaseAuth.currentUser
+        if (current != null) {
+            return current.uid
+        }
+        val result = firebaseAuth.signInAnonymously().await()
+        return result.user?.uid ?: error("Anonymous sign-in returned no user.")
+    }
+
+    private suspend fun resolveUploadIdentity(): UploadIdentity {
+        return try {
+            val userId = ensureFirebaseUserId()
+            UploadIdentity(userId = userId, warning = null)
+        } catch (error: Exception) {
+            val message = error.message ?: ""
+            val authNotConfigured = message.contains("CONFIGURATION_NOT_FOUND", ignoreCase = true)
+            if (authNotConfigured) {
+                UploadIdentity(
+                    userId = LEGACY_FALLBACK_USER_ID,
+                    warning = "Firebase Auth anonymous sign-in is not configured; used fallback user 'default'.",
+                )
+            } else {
+                throw error
+            }
+        }
+    }
+
+    private fun formatFirebaseError(prefix: String, error: Exception): String {
+        val message = error.message ?: "Unknown error"
+        val isConfigMissing = message.contains("CONFIGURATION_NOT_FOUND", ignoreCase = true)
+        val isPermissionDenied = message.contains("PERMISSION_DENIED", ignoreCase = true)
+        return if (isConfigMissing) {
+            "$prefix: $message. Enable Anonymous sign-in in Firebase Console > Authentication > Sign-in method."
+        } else if (isPermissionDenied) {
+            "$prefix: $message. Check Firestore rules and allow authenticated writes to healthConnectUsers/{request.auth.uid}."
+        } else {
+            "$prefix: $message"
+        }
+    }
 }
+
+data class UploadIdentity(
+    val userId: String,
+    val warning: String?,
+)
 
 data class HealthExport(
     val exportedAt: String,
@@ -488,6 +713,54 @@ data class HealthExport(
             append("\n  ]\n")
             append("}\n")
         }
+}
+
+data class HeartRateTimeline(
+    val exportedAt: String,
+    val zoneId: String,
+    val start: String,
+    val end: String,
+    val sources: List<String>,
+    val points: List<HeartRatePoint>,
+    val totalSamples: Int,
+) {
+    fun toPreviewJson(maxSamples: Int = 250): String {
+        val previewSamples = points.take(maxSamples)
+        return buildString {
+            append("{\n")
+            append("  \"exportedAt\": \"").append(exportedAt).append("\",\n")
+            append("  \"zoneId\": \"").append(zoneId).append("\",\n")
+            append("  \"start\": \"").append(start).append("\",\n")
+            append("  \"end\": \"").append(end).append("\",\n")
+            append("  \"totalSamples\": ").append(totalSamples).append(",\n")
+            append("  \"sources\": [")
+            append(sources.joinToString(", ") { "\"${it.escapeJson()}\"" })
+            append("],\n")
+            append("  \"previewSamples\": [\n")
+            append(previewSamples.joinToString(",\n") { "    ${it.toJson()}" })
+            append("\n  ]")
+            if (points.size > previewSamples.size) {
+                append(",\n  \"previewTruncated\": true")
+            }
+            append("\n}\n")
+        }
+    }
+}
+
+data class HeartRatePoint(
+    val time: String,
+    val bpm: Long,
+    val sourceApp: String,
+) {
+    fun toMap(): Map<String, Any?> =
+        linkedMapOf(
+            "time" to time,
+            "bpm" to bpm,
+            "sourceApp" to sourceApp,
+        )
+
+    fun toJson(): String =
+        "{\"time\": \"${time.escapeJson()}\", \"bpm\": $bpm, \"sourceApp\": \"${sourceApp.escapeJson()}\"}"
 }
 
 data class DailyHealth(

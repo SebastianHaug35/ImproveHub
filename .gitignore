@@ -2,6 +2,22 @@
 .env.*
 .venv/
 venv/
+env/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+
+# Python caches and builds
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
 
 __pycache__/
 **/__pycache__/
@@ -12,6 +28,7 @@ __pycache__/
 
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
+*.ipynb
 
 *.log
 .streamlit/secrets.toml
@@ -32,3 +49,14 @@ health-connect-exporter/build/
 health-connect-exporter/app/build/
 health-connect-exporter/.idea/
 *.iml
+
+# Android/Gradle transient artifacts
+**/.gradle/
+**/.kotlin/
+**/build/
+**/.externalNativeBuild/
+**/captures/
+
+# Auto-generated scan/print output
+scan and print/output/
+scan and print/rekonstruierte_dokumente/
