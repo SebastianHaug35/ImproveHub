@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -17,21 +18,31 @@ import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
 import androidx.health.connect.client.records.DistanceRecord
+import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.FloorsClimbedRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.HeightRecord
+import androidx.health.connect.client.records.HydrationRecord
+import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.Record
+import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
+import androidx.health.connect.client.records.WheelchairPushesRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.lifecycle.lifecycleScope
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
@@ -46,6 +57,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private lateinit var statusText: TextView
+    private lateinit var progressBar: ProgressBar
     private lateinit var previewText: TextView
     private lateinit var healthConnectClient: HealthConnectClient
     private val firestore by lazy { FirebaseFirestore.getInstance() }
@@ -64,8 +76,15 @@ class MainActivity : ComponentActivity() {
             HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
             HealthPermission.getReadPermission(HeartRateRecord::class),
             HealthPermission.getReadPermission(HeartRateVariabilityRmssdRecord::class),
+            HealthPermission.getReadPermission(FloorsClimbedRecord::class),
+            HealthPermission.getReadPermission(HydrationRecord::class),
+            HealthPermission.getReadPermission(HeightRecord::class),
+            HealthPermission.getReadPermission(OxygenSaturationRecord::class),
+            HealthPermission.getReadPermission(RespiratoryRateRecord::class),
+            HealthPermission.getReadPermission(ExerciseSessionRecord::class),
             HealthPermission.getReadPermission(RestingHeartRateRecord::class),
             HealthPermission.getReadPermission(SleepSessionRecord::class),
+            HealthPermission.getReadPermission(WheelchairPushesRecord::class),
             HealthPermission.getReadPermission(WeightRecord::class),
         )
 
@@ -80,8 +99,8 @@ class MainActivity : ComponentActivity() {
                     setStatus("Permissions granted.")
                     action()
                 } else {
-                    setStatus("Permissions granted. Reading Health Connect data...")
-                    readAndRender()
+                    setStatus("Permissions granted. Starting sync...")
+                    runOneTapSync()
                 }
             } else {
                 val missing = permissions.size - granted.intersect(permissions).size
@@ -126,30 +145,16 @@ class MainActivity : ComponentActivity() {
             setPadding(0, 24, 0, 24)
         }
 
-        val requestButton = Button(this).apply {
-            text = "Request Health Connect access"
-            setOnClickListener { requestHealthPermissions() }
+        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
         }
-        val readButton = Button(this).apply {
-            text = "Read last 14 days"
-            setOnClickListener { readAndRender() }
+
+        val syncButton = Button(this).apply {
+            text = "Sync all data now"
+            setOnClickListener { syncAllDataOneTap() }
         }
-        val readHeartRateTimelineButton = Button(this).apply {
-            text = "Read all-time heart rate"
-            setOnClickListener { readAllHeartRateTimeline() }
-        }
-        val shareButton = Button(this).apply {
-            text = "Share JSON export"
-            setOnClickListener { shareLatestJson() }
-        }
-        val uploadButton = Button(this).apply {
-            text = "Upload to Firebase"
-            setOnClickListener { uploadLatestJsonToFirebase() }
-        }
-        val uploadHeartRateTimelineButton = Button(this).apply {
-            text = "Upload all-time heart rate"
-            setOnClickListener { uploadHeartRateTimelineToFirebase() }
-        }
+
         val settingsButton = Button(this).apply {
             text = "Open Health Connect settings"
             setOnClickListener { openHealthConnectSettings() }
@@ -172,12 +177,8 @@ class MainActivity : ComponentActivity() {
 
         root.addView(title)
         root.addView(statusText)
-        root.addView(requestButton)
-        root.addView(readButton)
-        root.addView(readHeartRateTimelineButton)
-        root.addView(uploadButton)
-        root.addView(uploadHeartRateTimelineButton)
-        root.addView(shareButton)
+        root.addView(progressBar)
+        root.addView(syncButton)
         root.addView(permissionsButton)
         root.addView(appButton)
         root.addView(settingsButton)
@@ -195,11 +196,71 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val granted = healthConnectClient.permissionController.getGrantedPermissions()
             if (granted.containsAll(permissions)) {
-                setStatus("Permissions already granted. Reading data...")
-                readAndRender()
+                setStatus("Permissions already granted. Starting sync...")
+                runOneTapSync()
             } else {
-                actionAfterPermissionGrant = { readAndRender() }
+                actionAfterPermissionGrant = { runOneTapSync() }
                 requestPermissions.launch(permissions)
+            }
+        }
+    }
+
+    private fun syncAllDataOneTap() {
+        if (!::healthConnectClient.isInitialized) {
+            setStatus("Health Connect client is not ready.")
+            return
+        }
+
+        lifecycleScope.launch {
+            val granted = healthConnectClient.permissionController.getGrantedPermissions()
+            if (!granted.containsAll(permissions)) {
+                setStatus("Health Connect permissions required. Please grant access.")
+                actionAfterPermissionGrant = { runOneTapSync() }
+                requestPermissions.launch(permissions)
+                return@launch
+            }
+            runOneTapSync()
+        }
+    }
+
+    private fun runOneTapSync() {
+        progressBar.progress = 0
+        setStatus("Sync queued...")
+        val workId = AutoSyncScheduler.enqueueImmediate(this)
+        observeSyncWork(workId)
+    }
+
+    private fun observeSyncWork(workId: UUID) {
+        WorkManager.getInstance(this).getWorkInfoByIdLiveData(workId).observe(this) { info ->
+            if (info == null) {
+                return@observe
+            }
+
+            val progress = info.progress.getInt(HealthAutoSyncWorker.PROGRESS_PERCENT_KEY, progressBar.progress)
+            val stage = info.progress.getString(HealthAutoSyncWorker.PROGRESS_STAGE_KEY)
+            val details = info.progress.getString(HealthAutoSyncWorker.PROGRESS_DETAILS_KEY)
+            progressBar.progress = progress
+
+            if (!stage.isNullOrBlank()) {
+                val detailsSuffix = if (details.isNullOrBlank()) "" else " - $details"
+                setStatus("$stage$detailsSuffix")
+            }
+
+            when (info.state) {
+                WorkInfo.State.SUCCEEDED -> {
+                    progressBar.progress = 100
+                    val days = info.outputData.getInt(HealthAutoSyncWorker.OUTPUT_DAYS_KEY, 0)
+                    val heartSamples = info.outputData.getInt(HealthAutoSyncWorker.OUTPUT_HEART_RATE_SAMPLES_KEY, 0)
+                    setStatus("Sync completed. Days: $days, new heart-rate samples: $heartSamples")
+                    previewText.text = "Auto-sync pushed data under /data. Days synced: $days. New HR samples: $heartSamples."
+                }
+                WorkInfo.State.FAILED -> {
+                    val error = info.outputData.getString(HealthAutoSyncWorker.OUTPUT_ERROR_KEY)
+                    setStatus("Sync failed: ${error ?: "Unknown error"}")
+                    previewText.text = "Sync failed: ${error ?: "Unknown error"}"
+                }
+                WorkInfo.State.CANCELLED -> setStatus("Sync cancelled.")
+                else -> Unit
             }
         }
     }
