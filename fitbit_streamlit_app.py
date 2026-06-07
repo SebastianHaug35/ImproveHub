@@ -29,7 +29,8 @@ load_dotenv()
 FITBIT_API_BASE_URL = os.getenv("FITBIT_API_BASE_URL", "https://api.fitbit.com").rstrip("/")
 FITBIT_ACCESS_TOKEN = os.getenv("FITBIT_ACCESS_TOKEN")
 
-GOOGLE_FIT_API_BASE_URL = os.getenv("GOOGLE_FIT_API_BASE_URL", "https://www.googleapis.com/fitness/v1").rstrip("/")
+GOOGLE_HEALTH_API_BASE_URL = os.getenv("GOOGLE_HEALTH_API_BASE_URL", "https://health.googleapis.com/v4").rstrip("/")
+GOOGLE_FIT_API_BASE_URL = GOOGLE_HEALTH_API_BASE_URL
 GOOGLE_FIT_ACCESS_TOKEN = os.getenv("GOOGLE_FIT_ACCESS_TOKEN")
 GOOGLE_FIT_REFRESH_TOKEN = os.getenv("GOOGLE_FIT_REFRESH_TOKEN")
 GOOGLE_FIT_CLIENT_ID = os.getenv("GOOGLE_FIT_CLIENT_ID")
@@ -47,12 +48,17 @@ DISPLAY_TIMEZONE = os.getenv("HEALTH_DISPLAY_TIMEZONE", "Europe/Berlin")
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_FIT_OAUTH_STATE_KEY = "GOOGLE_FIT_OAUTH_STATE"
-GOOGLE_FIT_SCOPES = [
-    "https://www.googleapis.com/auth/fitness.activity.read",
-    "https://www.googleapis.com/auth/fitness.location.read",
-    "https://www.googleapis.com/auth/fitness.body.read",
+GOOGLE_HEALTH_SCOPES = [
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+    "https://www.googleapis.com/auth/googlehealth.location.readonly",
+    "https://www.googleapis.com/auth/googlehealth.settings.readonly",
+    "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+    "https://www.googleapis.com/auth/googlehealth.profile.readonly",
 ]
+GOOGLE_FIT_SCOPES = GOOGLE_HEALTH_SCOPES
 
 FITBIT_ACTIVITY_RESOURCES = {
     "Steps": "steps",
@@ -62,36 +68,51 @@ FITBIT_ACTIVITY_RESOURCES = {
     "Elevation": "elevation",
 }
 
-GOOGLE_FIT_AGGREGATES = {
+GOOGLE_HEALTH_AGGREGATES = {
     "Steps": {
-        "data_type": "com.google.step_count.delta",
+        "data_type": "steps",
         "columns": ["steps"],
+        "extract": lambda rollup: int(rollup.get("steps", {}).get("countSum") or 0),
     },
     "Active Minutes": {
-        "data_type": "com.google.active_minutes",
+        "data_type": "active-minutes",
         "columns": ["active_minutes"],
-    },
-    "Heart Minutes": {
-        "data_type": "com.google.heart_minutes",
-        "columns": ["heart_minutes"],
+        "extract": lambda rollup: sum(
+            int(item.get("activeMinutesSum") or 0)
+            for item in rollup.get("activeMinutes", {}).get("activeMinutesRollupByActivityLevel", [])
+        ),
     },
     "Calories": {
-        "data_type": "com.google.calories.expended",
+        "data_type": "active-energy-burned",
         "columns": ["calories"],
+        "extract": lambda rollup: float(rollup.get("activeEnergyBurned", {}).get("kcalSum") or 0.0),
     },
     "Distance": {
-        "data_type": "com.google.distance.delta",
+        "data_type": "distance",
         "columns": ["distance_m"],
+        "extract": lambda rollup: float(rollup.get("distance", {}).get("millimetersSum") or 0.0) / 1000.0,
     },
     "Heart Rate": {
-        "data_type": "com.google.heart_rate.bpm",
+        "data_type": "heart-rate",
         "columns": ["heart_rate_avg", "heart_rate_max", "heart_rate_min"],
+        "extract": lambda rollup: [
+            rollup.get("heartRate", {}).get("beatsPerMinuteAvg"),
+            rollup.get("heartRate", {}).get("beatsPerMinuteMax"),
+            rollup.get("heartRate", {}).get("beatsPerMinuteMin"),
+        ],
     },
     "Weight": {
-        "data_type": "com.google.weight",
+        "data_type": "weight",
         "columns": ["weight_avg", "weight_max", "weight_min"],
+        "extract": lambda rollup: [
+            (rollup.get("weight", {}).get("weightGramsAvg") or 0.0) / 1000.0,
+            None,
+            None,
+        ],
     },
 }
+
+GOOGLE_FIT_AGGREGATES = GOOGLE_HEALTH_AGGREGATES
 
 
 def json_load(path: Path) -> dict[str, Any]:
@@ -184,7 +205,7 @@ def handle_google_oauth_callback() -> None:
     set_key(".env", GOOGLE_FIT_OAUTH_STATE_KEY, "")
     st.query_params.clear()
     st.cache_data.clear()
-    st.success("Google Fit verbunden.")
+    st.success("Google Health API verbunden.")
     st.rerun()
 
 
@@ -199,6 +220,38 @@ def save_google_token_payload(payload: dict[str, Any]) -> None:
     if payload.get("refresh_token"):
         GOOGLE_FIT_REFRESH_TOKEN = payload["refresh_token"]
         set_key(".env", "GOOGLE_FIT_REFRESH_TOKEN", GOOGLE_FIT_REFRESH_TOKEN)
+
+
+def clear_google_health_tokens() -> None:
+    global GOOGLE_FIT_ACCESS_TOKEN, GOOGLE_FIT_REFRESH_TOKEN, GOOGLE_FIT_TOKEN_EXPIRES_AT
+
+    GOOGLE_FIT_ACCESS_TOKEN = None
+    GOOGLE_FIT_REFRESH_TOKEN = None
+    GOOGLE_FIT_TOKEN_EXPIRES_AT = None
+    for key in [
+        "GOOGLE_FIT_ACCESS_TOKEN",
+        "GOOGLE_FIT_REFRESH_TOKEN",
+        "GOOGLE_FIT_TOKEN_EXPIRES_AT",
+        GOOGLE_FIT_OAUTH_STATE_KEY,
+    ]:
+        os.environ.pop(key, None)
+    set_key(".env", "GOOGLE_FIT_ACCESS_TOKEN", "")
+    set_key(".env", "GOOGLE_FIT_REFRESH_TOKEN", "")
+    set_key(".env", "GOOGLE_FIT_TOKEN_EXPIRES_AT", "")
+    set_key(".env", GOOGLE_FIT_OAUTH_STATE_KEY, "")
+    st.session_state.pop("google_fit_oauth_state", None)
+    st.cache_data.clear()
+
+
+def get_google_token_info() -> dict[str, Any] | None:
+    token = GOOGLE_FIT_ACCESS_TOKEN or GOOGLE_FIT_REFRESH_TOKEN
+    if not token:
+        return None
+
+    response = requests.get(GOOGLE_TOKEN_INFO_URL, params={"access_token": GOOGLE_FIT_ACCESS_TOKEN}, timeout=30)
+    if response.status_code != 200:
+        return {"error": response.text, "status_code": response.status_code}
+    return response.json()
 
 
 def google_token_is_expired() -> bool:
@@ -234,7 +287,7 @@ def get_google_access_token() -> str:
         return GOOGLE_FIT_ACCESS_TOKEN
     if GOOGLE_FIT_REFRESH_TOKEN and GOOGLE_FIT_CLIENT_ID and GOOGLE_FIT_CLIENT_SECRET:
         return refresh_google_access_token()
-    raise RuntimeError("Google Fit ist noch nicht verbunden.")
+    raise RuntimeError("Google Health API ist noch nicht verbunden.")
 
 
 def request_google_fit(
@@ -247,7 +300,7 @@ def request_google_fit(
     token = get_google_access_token()
     response = requests.request(
         method,
-        f"{GOOGLE_FIT_API_BASE_URL}{path}",
+        f"{GOOGLE_HEALTH_API_BASE_URL}{path}",
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
@@ -259,11 +312,23 @@ def request_google_fit(
     )
 
     if response.status_code == 401:
-        raise RuntimeError("Google Fit lehnt den Token ab. Bitte erneut verbinden.")
+        raise RuntimeError("Google Health API lehnt den Token ab. Bitte erneut verbinden.")
     if response.status_code == 403:
-        raise RuntimeError("Der Token hat fuer diese Google-Fit-Daten keinen passenden Scope.")
+        detail = response.text.strip()
+        hint = f" Details: {detail}" if detail else ""
+        raise RuntimeError("Der Token hat fuer diese Google-Health-Daten keinen passenden Scope." + hint)
     response.raise_for_status()
     return response.json()
+
+
+def request_google_health(
+    method: str,
+    path: str,
+    *,
+    json: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return request_google_fit(method, path, json=json, params=params)
 
 
 def request_fitbit(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -295,17 +360,16 @@ def request_fitbit(path: str, params: dict[str, Any] | None = None) -> dict[str,
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_google_fit_sources() -> pd.DataFrame:
-    payload = request_google_fit("GET", "/users/me/dataSources")
+    payload = request_google_health("GET", "/users/me/pairedDevices")
     rows = []
-    for source in payload.get("dataSource", []):
-        data_type = source.get("dataType", {})
+    for source in payload.get("pairedDevices", []):
         rows.append(
             {
-                "data_stream_id": source.get("dataStreamId"),
-                "data_type": data_type.get("name"),
-                "type": source.get("type"),
-                "application": source.get("application", {}).get("name"),
-                "device": source.get("device", {}).get("model"),
+                "device_name": source.get("device", {}).get("displayName"),
+                "form_factor": source.get("device", {}).get("formFactor"),
+                "manufacturer": source.get("device", {}).get("manufacturer"),
+                "platform": source.get("platform"),
+                "device_id": source.get("name"),
             }
         )
     return pd.DataFrame(rows)
@@ -313,25 +377,54 @@ def get_google_fit_sources() -> pd.DataFrame:
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_google_fit_daily_aggregates(selected: list[str], start_date: date, end_date: date, timezone_id: str) -> pd.DataFrame:
-    request_body = {
-        "startTimeMillis": millis_at_start_of_day(start_date),
-        "endTimeMillis": millis_at_end_of_day(end_date),
-        "aggregateBy": [{"dataTypeName": GOOGLE_FIT_AGGREGATES[label]["data_type"]} for label in selected],
-        "bucketByTime": {"period": {"type": "day", "value": 1, "timeZoneId": timezone_id}},
-    }
-    payload = request_google_fit("POST", "/users/me/dataset:aggregate", json=request_body)
     rows = []
-    for bucket in payload.get("bucket", []):
-        day_value = pd.to_datetime(int(bucket["startTimeMillis"]), unit="ms", utc=True).date()
+    for day_value in date_range(start_date, end_date):
         row: dict[str, Any] = {"day": day_value}
-        for label, dataset in zip(selected, bucket.get("dataset", [])):
-            columns = GOOGLE_FIT_AGGREGATES[label]["columns"]
-            points = dataset.get("point", [])
-            values = flatten_point_values(points[0].get("value", [])) if points else [None] * len(columns)
-            for column, value in zip(columns, values):
+        for label in selected:
+            config = GOOGLE_HEALTH_AGGREGATES[label]
+            payload = request_google_health(
+                "POST",
+                f"/users/me/dataTypes/{config['data_type']}/dataPoints:dailyRollUp",
+                json={
+                    "range": {
+                        "start": {"date": to_health_date(day_value)},
+                        "end": {"date": to_health_date(day_value + timedelta(days=1))},
+                    },
+                    "windowSizeDays": 1,
+                    "pageSize": 1,
+                },
+            )
+            rollup_points = payload.get("rollupDataPoints", [])
+            if not rollup_points:
+                for column in config["columns"]:
+                    row[column] = None
+                continue
+
+            values = config["extract"](rollup_points[0])
+            if not isinstance(values, list):
+                values = [values]
+            for column, value in zip(config["columns"], values):
                 row[column] = value
         rows.append(row)
     return normalize_frame(rows)
+
+
+def to_health_date(value: date) -> dict[str, int]:
+    return {"year": value.year, "month": value.month, "day": value.day}
+
+
+def date_range(start_date: date, end_date: date) -> list[date]:
+    values = []
+    current = start_date
+    while current <= end_date:
+        values.append(current)
+        current += timedelta(days=1)
+    return values
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_google_health_profile() -> dict[str, Any]:
+    return request_google_health("GET", "/users/me/profile")
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -522,28 +615,37 @@ def format_value(value: Any, suffix: str = "") -> str:
 
 
 def render_google_fit(start_date: date, end_date: date, timezone_id: str, selected: list[str], show_sources: bool) -> None:
-    st.subheader("Google Fit")
+    st.subheader("Google Health API")
+
+    token_info = get_google_token_info()
+    with st.expander("OAuth Debug", expanded=False):
+        st.write({
+            "has_access_token": bool(GOOGLE_FIT_ACCESS_TOKEN),
+            "has_refresh_token": bool(GOOGLE_FIT_REFRESH_TOKEN),
+            "token_expires_at": GOOGLE_FIT_TOKEN_EXPIRES_AT,
+            "token_info": token_info,
+        })
 
     if not GOOGLE_FIT_ACCESS_TOKEN and not GOOGLE_FIT_REFRESH_TOKEN:
-        st.info("Google Fit ist noch nicht verbunden.")
+        st.info("Google Health API ist noch nicht verbunden.")
         auth_url = build_google_auth_url()
         if auth_url:
-            st.link_button("Mit Google Fit verbinden", auth_url, use_container_width=False)
+            st.link_button("Mit Google Health API verbinden", auth_url, use_container_width=False)
         else:
             st.warning("client_secret_*.json fehlt. Ohne OAuth-Client kann kein Google-Login gestartet werden.")
         return
 
     if show_sources:
         sources = get_google_fit_sources()
-        with st.expander("Google-Fit-Datenquellen", expanded=False):
+        with st.expander("Google-Health-Datenquellen", expanded=False):
             if sources.empty:
-                st.info("Keine Google-Fit-Datenquellen gefunden.")
+                st.info("Keine Google-Health-Datenquellen gefunden.")
             else:
                 st.dataframe(sources, use_container_width=True, hide_index=True)
 
     frame = get_google_fit_daily_aggregates(selected, start_date, end_date, timezone_id)
     if frame.empty:
-        st.info("Keine Google-Fit-Tageswerte fuer diesen Zeitraum gefunden.")
+        st.info("Keine Google-Health-Tageswerte fuer diesen Zeitraum gefunden.")
         return
 
     latest = frame.iloc[-1]
@@ -610,7 +712,7 @@ def render_health_connect(start_date: date, end_date: date) -> None:
     frame = get_health_connect_daily(start_date, end_date)
     if frame.empty:
         st.info("Keine Health-Connect-Daten in Firebase gefunden.")
-        st.caption("Dieser Bereich zeigt die Android-Daten aus Firestore, nicht die alte Google-Fit-REST-API.")
+        st.caption("Dieser Bereich zeigt die Android-Daten aus Firestore, nicht die Google-Health-API.")
         return
 
     latest = frame.iloc[-1]
@@ -773,7 +875,7 @@ def main() -> None:
     handle_google_oauth_callback()
 
     st.title("Health Dashboard")
-    st.caption("Google Fit und Health Connect laufen hier nebeneinander. Fitbit bleibt optional.")
+    st.caption("Google Health API und Health Connect laufen hier nebeneinander. Fitbit bleibt optional.")
 
     today = date.today()
     default_start = today - timedelta(days=14)
@@ -784,7 +886,7 @@ def main() -> None:
         end = st.date_input("Ende", value=today, max_value=today)
         timezone_id = st.text_input("Timezone", value="Europe/Berlin")
         google_fit_data = st.multiselect(
-            "Google Fit Daten",
+            "Google Health Daten",
             options=list(GOOGLE_FIT_AGGREGATES.keys()),
             default=["Steps", "Calories", "Distance"],
         )
@@ -793,8 +895,8 @@ def main() -> None:
             options=list(FITBIT_ACTIVITY_RESOURCES.keys()),
             default=["Steps", "Calories", "Distance"],
         )
-        show_google_fit_sources = st.checkbox("Google-Fit-Datenquellen anzeigen", value=False)
-        show_google_fit = st.checkbox("Google Fit", value=True)
+        show_google_fit_sources = st.checkbox("Google-Health-Datenquellen anzeigen", value=False)
+        show_google_fit = st.checkbox("Google Health API", value=True)
         show_health_connect = st.checkbox("Health Connect (Firebase)", value=True)
         show_fitbit = st.checkbox("Fitbit API", value=True)
         show_fitbit_heart = st.checkbox("Fitbit Herzfrequenz", value=True)
@@ -804,12 +906,15 @@ def main() -> None:
         st.divider()
         auth_url = build_google_auth_url()
         if GOOGLE_FIT_ACCESS_TOKEN or GOOGLE_FIT_REFRESH_TOKEN:
-            st.success("Google Fit verbunden")
+            st.success("Google Health API verbunden")
             if auth_url:
-                st.link_button("Google Fit neu verbinden", auth_url, use_container_width=True)
+                st.link_button("Google Health API neu verbinden", auth_url, use_container_width=True)
+            if st.button("Google Health API abmelden", use_container_width=True):
+                clear_google_health_tokens()
+                st.rerun()
         else:
             if auth_url:
-                st.link_button("Mit Google Fit verbinden", auth_url, use_container_width=True)
+                st.link_button("Mit Google Health API verbinden", auth_url, use_container_width=True)
             else:
                 st.info("Google OAuth ist noch nicht konfiguriert.")
 
@@ -826,7 +931,7 @@ def main() -> None:
         st.stop()
 
     st.info(
-        "Zur Einordnung: Google Fit liest die alte Google-Fit-Cloud-API. "
+        "Zur Einordnung: Google Health API liest die Fitbit/Google-Cloud-Daten. "
         "Health Connect zeigt die Android-Daten aus Firebase. Das sind verwandte, aber nicht identische Datenquellen."
     )
 

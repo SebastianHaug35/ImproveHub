@@ -114,7 +114,7 @@ class HealthAutoSyncWorker(
         private const val FIRESTORE_COLLECTION = "healthConnectUsers"
         private const val LEGACY_FALLBACK_USER_ID = "default"
         private const val HEART_RATE_WINDOW_DAYS = 30L
-        private const val GENERAL_WINDOW_DAYS = 14L
+        private const val GENERAL_WINDOW_DAYS = 90L
         private const val HEART_RATE_CHUNK_SIZE = 500
         private const val FIRESTORE_MAX_BATCH_WRITES = 450
         private const val PREFS_NAME = "improvehub_auto_sync"
@@ -125,7 +125,7 @@ class HealthAutoSyncWorker(
         private const val PREF_SYNC_STARTED_AT_EPOCH = "sync_started_at_epoch"
         private const val PREF_SYNC_LOG = "sync_log"
         private const val LOG_LINE_LIMIT = 300
-        private const val SYNC_LOCK_STALE_SECONDS = 2L * 60L * 60L
+        private const val SYNC_LOCK_STALE_SECONDS = 10L * 60L
         private const val RATE_LIMIT_ERROR_TOKEN = "Rate limited request quota has been exceeded"
 
         private const val NOTIFICATION_CHANNEL_ID = "improvehub_sync"
@@ -499,6 +499,12 @@ class HealthAutoSyncWorker(
     private suspend fun readDailyExport(client: HealthConnectClient, start: Instant, end: Instant): AutoDailyExport {
         val days = linkedMapOf<String, AutoDaily>()
         val sources = linkedSetOf<String>()
+        val typeRecordCounts = linkedMapOf<String, Long>()
+
+        fun trackCount(label: String, count: Int) {
+            if (count <= 0) return
+            typeRecordCounts[label] = (typeRecordCounts[label] ?: 0L) + count.toLong()
+        }
 
         fun dayKey(instant: Instant): String =
             instant.atZone(zoneId).toLocalDate().format(DateTimeFormatter.ISO_LOCAL_DATE)
@@ -518,14 +524,18 @@ class HealthAutoSyncWorker(
             val progress = 15 + ((covered.toDouble() / totalSeconds.toDouble()) * 30.0).toInt().coerceIn(0, 30)
             updateStatus(progress, "Reading daily health data", "Window: $cursor -> $windowEnd")
 
-            readRecordsSafe<StepsRecord>(client, cursor, windowEnd, "steps").forEach { record ->
+            val stepRecords = readRecordsSafe<StepsRecord>(client, cursor, windowEnd, "steps")
+            trackCount("steps", stepRecords.size)
+            stepRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 daily(key).steps += record.count
                 daily(key).sourceApps.add(record.metadata.dataOrigin.packageName)
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<DistanceRecord>(client, cursor, windowEnd, "distance").forEach { record ->
+            val distanceRecords = readRecordsSafe<DistanceRecord>(client, cursor, windowEnd, "distance")
+            trackCount("distance", distanceRecords.size)
+            distanceRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 daily(key).distanceMeters += record.distance.inMeters
                 daily(key).distanceSamples += 1
@@ -533,7 +543,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<ActiveCaloriesBurnedRecord>(client, cursor, windowEnd, "active_calories").forEach { record ->
+            val activeCaloriesRecords = readRecordsSafe<ActiveCaloriesBurnedRecord>(client, cursor, windowEnd, "active_calories")
+            trackCount("active_calories", activeCaloriesRecords.size)
+            activeCaloriesRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 daily(key).activeCaloriesKcal += record.energy.inKilocalories
                 daily(key).activeCaloriesSamples += 1
@@ -541,7 +553,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<TotalCaloriesBurnedRecord>(client, cursor, windowEnd, "total_calories").forEach { record ->
+            val totalCaloriesRecords = readRecordsSafe<TotalCaloriesBurnedRecord>(client, cursor, windowEnd, "total_calories")
+            trackCount("total_calories", totalCaloriesRecords.size)
+            totalCaloriesRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 daily(key).totalCaloriesKcal += record.energy.inKilocalories
                 daily(key).totalCaloriesSamples += 1
@@ -549,7 +563,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<HeartRateRecord>(client, cursor, windowEnd, "heart_rate").forEach { record ->
+            val heartRateRecords = readRecordsSafe<HeartRateRecord>(client, cursor, windowEnd, "heart_rate")
+            trackCount("heart_rate", heartRateRecords.size)
+            heartRateRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 daily(key).heartRateSamples.addAll(record.samples.map { it.beatsPerMinute })
                 daily(key).heartRateRecordCount += 1
@@ -557,7 +573,10 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<RestingHeartRateRecord>(client, cursor, windowEnd, "resting_heart_rate").forEach { record ->
+            val restingHeartRateRecords =
+                readRecordsSafe<RestingHeartRateRecord>(client, cursor, windowEnd, "resting_heart_rate")
+            trackCount("resting_heart_rate", restingHeartRateRecords.size)
+            restingHeartRateRecords.forEach { record ->
                 val key = dayKey(record.time)
                 daily(key).restingHeartRateSamples.add(record.beatsPerMinute)
                 daily(key).restingHeartRateRecordCount += 1
@@ -565,7 +584,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<HeartRateVariabilityRmssdRecord>(client, cursor, windowEnd, "hrv").forEach { record ->
+            val hrvRecords = readRecordsSafe<HeartRateVariabilityRmssdRecord>(client, cursor, windowEnd, "hrv")
+            trackCount("hrv", hrvRecords.size)
+            hrvRecords.forEach { record ->
                 val key = dayKey(record.time)
                 daily(key).hrvRmssdMillisSamples.add(record.heartRateVariabilityMillis)
                 daily(key).hrvRecordCount += 1
@@ -573,7 +594,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<FloorsClimbedRecord>(client, cursor, windowEnd, "floors").forEach { record ->
+            val floorsRecords = readRecordsSafe<FloorsClimbedRecord>(client, cursor, windowEnd, "floors")
+            trackCount("floors", floorsRecords.size)
+            floorsRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 daily(key).floorsClimbed += record.floors
                 daily(key).floorsSamples += 1
@@ -581,7 +604,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<HydrationRecord>(client, cursor, windowEnd, "hydration").forEach { record ->
+            val hydrationRecords = readRecordsSafe<HydrationRecord>(client, cursor, windowEnd, "hydration")
+            trackCount("hydration", hydrationRecords.size)
+            hydrationRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 daily(key).hydrationLiters += record.volume.inLiters
                 daily(key).hydrationSamples += 1
@@ -589,7 +614,10 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<OxygenSaturationRecord>(client, cursor, windowEnd, "oxygen_saturation").forEach { record ->
+            val oxygenSaturationRecords =
+                readRecordsSafe<OxygenSaturationRecord>(client, cursor, windowEnd, "oxygen_saturation")
+            trackCount("oxygen_saturation", oxygenSaturationRecords.size)
+            oxygenSaturationRecords.forEach { record ->
                 val key = dayKey(record.time)
                 daily(key).oxygenSaturationSamples.add(record.percentage.value)
                 daily(key).oxygenSaturationRecordCount += 1
@@ -597,7 +625,10 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<RespiratoryRateRecord>(client, cursor, windowEnd, "respiratory_rate").forEach { record ->
+            val respiratoryRateRecords =
+                readRecordsSafe<RespiratoryRateRecord>(client, cursor, windowEnd, "respiratory_rate")
+            trackCount("respiratory_rate", respiratoryRateRecords.size)
+            respiratoryRateRecords.forEach { record ->
                 val key = dayKey(record.time)
                 daily(key).respiratoryRateSamples.add(record.rate)
                 daily(key).respiratoryRateRecordCount += 1
@@ -605,7 +636,10 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<ExerciseSessionRecord>(client, cursor, windowEnd, "exercise_session").forEach { record ->
+            val exerciseSessionRecords =
+                readRecordsSafe<ExerciseSessionRecord>(client, cursor, windowEnd, "exercise_session")
+            trackCount("exercise_session", exerciseSessionRecords.size)
+            exerciseSessionRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 val durationMinutes = (record.endTime.epochSecond - record.startTime.epochSecond) / 60
                 daily(key).exerciseMinutes += durationMinutes
@@ -614,7 +648,10 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<WheelchairPushesRecord>(client, cursor, windowEnd, "wheelchair_pushes").forEach { record ->
+            val wheelchairPushRecords =
+                readRecordsSafe<WheelchairPushesRecord>(client, cursor, windowEnd, "wheelchair_pushes")
+            trackCount("wheelchair_pushes", wheelchairPushRecords.size)
+            wheelchairPushRecords.forEach { record ->
                 val key = dayKey(record.startTime)
                 daily(key).wheelchairPushes += record.count
                 daily(key).wheelchairPushSamples += 1
@@ -622,7 +659,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<HeightRecord>(client, cursor, windowEnd, "height").forEach { record ->
+            val heightRecords = readRecordsSafe<HeightRecord>(client, cursor, windowEnd, "height")
+            trackCount("height", heightRecords.size)
+            heightRecords.forEach { record ->
                 val key = dayKey(record.time)
                 daily(key).heightLatestMeters = record.height.inMeters
                 daily(key).heightSamples += 1
@@ -630,7 +669,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<WeightRecord>(client, cursor, windowEnd, "weight").forEach { record ->
+            val weightRecords = readRecordsSafe<WeightRecord>(client, cursor, windowEnd, "weight")
+            trackCount("weight", weightRecords.size)
+            weightRecords.forEach { record ->
                 val key = dayKey(record.time)
                 daily(key).weightKgSamples.add(record.weight.inKilograms)
                 daily(key).weightRecordCount += 1
@@ -638,7 +679,9 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
-            readRecordsSafe<SleepSessionRecord>(client, cursor, windowEnd, "sleep").forEach { record ->
+            val sleepRecords = readRecordsSafe<SleepSessionRecord>(client, cursor, windowEnd, "sleep")
+            trackCount("sleep", sleepRecords.size)
+            sleepRecords.forEach { record ->
                 val key = sleepDayKey(record.endTime)
                 val durationMinutes = (record.endTime.epochSecond - record.startTime.epochSecond) / 60
                 val day = daily(key)
@@ -665,6 +708,11 @@ class HealthAutoSyncWorker(
                 sources.add(record.metadata.dataOrigin.packageName)
             }
 
+            if (sawRateLimitError) {
+                appendLog("Rate limit detected during daily read; deferring remaining windows")
+                break
+            }
+
             if (windowEnd == end) {
                 break
             }
@@ -672,6 +720,7 @@ class HealthAutoSyncWorker(
         }
 
         appendLog("Daily export complete. Days=${days.size}")
+    appendLog("Daily type counts: ${typeRecordCounts.entries.joinToString { "${it.key}=${it.value}" }}")
         return AutoDailyExport(
             exportedAt = Instant.now().toString(),
             zoneId = zoneId.id,
@@ -755,6 +804,11 @@ class HealthAutoSyncWorker(
                 }
             }
 
+            if (sawRateLimitError) {
+                appendLog("Rate limit detected during heart-rate read; deferring remaining windows")
+                break
+            }
+
             if (windowEnd == end) {
                 break
             }
@@ -832,6 +886,9 @@ class HealthAutoSyncWorker(
         end: Instant,
         label: String,
     ): List<T> {
+        if (sawRateLimitError) {
+            return emptyList()
+        }
         return try {
             readRecords(client, start, end)
         } catch (error: Exception) {

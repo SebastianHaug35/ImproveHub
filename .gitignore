@@ -36,6 +36,10 @@ __pycache__/
 *-firebase-adminsdk-*.json
 client_secret_*.json
 google_fit_tokens.json
+google_fit_tokens*.json
+.google_health_fresh_tokens.json
+google_health_tokens.json
+google_health_tokens*.json
 google-services.json
 **/google-services.json
 
